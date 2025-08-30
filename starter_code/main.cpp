@@ -29,10 +29,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    int proc_time, dmax;
+    double proc_time, dmax;
     ipfile >> proc_time >> dmax;
 
-    int wd, vd, wp, vp, wo, vo;
+    double wd, vd, wp, vp, wo, vo;
     ipfile >> wd >> vd >> wp >> vp >> wo >> vo;
 
     Planner pl(proc_time, dmax, wd, vd, wp, vp, wo, vo);
@@ -59,59 +59,53 @@ int main(int argc, char** argv) {
     ipfile >> nheli;
     for (int i = 0; i < nheli; ++i) {
         Helicopter h;
-        int city_id;                         // <-- added
+        int city_id;                         
         ipfile >> city_id >> h.wcap >> h.dcap >> h.F >> h.alpha;
-        h.city = city_id - 1;                // <-- assume input is 1-based; drop -1 if 0-based
-        h.kms  = 0;                          // <-- ensure initialized
+        h.city = city_id - 1;               
+        h.kms  = 0;                      
         pl.add_heli(h);
     }
 
-    State opt = pl.compute_allocation();     // <-- State, not vector
+    State opt = pl.compute_allocation();   
 
-    /*ofstream outfile(outputfilename);
-    if (!outfile) {
-        cout << "Cannot open output file\n";
-        return 1;
-    }*/
-
-    // --- minimal output: per-heli trip count, then each trip’s deliveries ---
-    // Format example:
-    // <heli_index> <num_trips>
-    // <num_deliveries_in_trip_1>
-    // x y d p o
-    // ...
-    // -1
-    // <num_deliveries_in_trip_2>
-    // ...
-    cout<<"lol"<<endl;
     for (int i = 0; i < (int)opt.state_table.size(); ++i) {
         const auto& trips = opt.state_table[i];
         cout << (i + 1) << " " << trips.size() << "\n";
 
         for (const auto& trip : trips) {
-            // count deliveries in path (skip cities)
-            int dcount = 0;
-            for (const auto& node : trip.path) {
-                if (holds_alternative<Delivery*>(node)) ++dcount;
-            }
-            cout << dcount << "\n";
-
-            for (const auto& node : trip.path) {
+            // print pickup numbers (sum of resources on this trip)
+            int total_d=0, total_p=0, total_o=0;
+            for (auto& node : trip.path) {
                 if (auto pd = get_if<Delivery*>(&node)) {
-                    Delivery* d = *pd;
-                    // Print village coordinates and resources (order: d, p, o as per pkts indices 0,1,2)
-                    cout << d->x << " " << d->y << " "
-                            << d->resources[0] << " "
-                            << d->resources[1] << " "
-                            << d->resources[2] << "\n";
+                    total_d += (*pd)->resources[0];
+                    total_p += (*pd)->resources[1];
+                    total_o += (*pd)->resources[2];
                 }
             }
-            cout << -1 << "\n"; // trip terminator
-        }
-    }
+            cout << total_d << " " << total_p << " " << total_o;
 
-    // If your checker expects only trips (no trailing text), you can remove this line:
-    // outfile << "OK\n";
+            // count villages visited
+            int vcount = 0;
+            for (auto& node : trip.path) 
+                if (holds_alternative<Delivery*>(node)) vcount++;
+            cout << " " << vcount;
+
+            // print village id + drops
+            for (auto& node : trip.path) {
+                if (auto pd = get_if<Delivery*>(&node)) {
+                    const auto& vref = pl.get_villages();
+                    int vid = (*pd)->vil - &vref[0];
+                    cout << " " << (vid+1) << " "
+                        << (*pd)->resources[0] << " "
+                        << (*pd)->resources[1] << " "
+                        << (*pd)->resources[2];
+                }
+            }
+            cout << "\n";
+        }
+        cout << "-1\n";
+    }
+    cout<<opt.state_cost<<endl;
 
     return 0;
 }

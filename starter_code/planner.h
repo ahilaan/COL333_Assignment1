@@ -15,31 +15,31 @@
 using namespace std;
 
 struct City {
-    int x = 0;
-    int y = 0;
+    double x = 0;
+    double y = 0;
 };
 
 struct Helicopter {
-    int city = 0;   // <-- init
-    int wcap = 0;
-    int dcap = 0;
-    int F = 0;
-    int alpha = 0;
-    int kms = 0;    // <-- init
+    int city = 0;  
+    double wcap = 0;
+    double dcap = 0;
+    double F = 0;
+    double alpha = 0;
+    double kms = 0;  
 };
 
 struct Village {
-    int x = 0;
-    int y = 0;
+    double x = 0;
+    double y = 0;
     int n = 0;
     int food = 0;
     int other = 0;
 };
 
 struct Delivery{
-    Village* vil = nullptr;          // <-- init
-    int x = 0;                       // <-- init
-    int y = 0;                       // <-- init
+    Village* vil = nullptr;          
+    double x = 0;                       
+    double y = 0;                      
     array<int,3> resources{0,0,0};
 };
 
@@ -48,22 +48,22 @@ using Node = variant<City*, Delivery*>;
 template<typename NodeT>
 struct Trip {
     vector<NodeT> path;  
-    int path_cost = 0;  
-    int weight = 0;   
-    int val = 0;                  // <-- init
+    double path_cost = 0;  
+    double weight = 0;   
+    double val = 0;                
 };
 
 struct State {
-    int state_cost = 0;
+    double state_cost = 0;
     vector<vector<Trip<Node>>> state_table;
-    deque<Delivery> delivery_pool;    // <-- stable ownership for Delivery*
+    deque<Delivery> delivery_pool;    
 };
 
 class Planner {
 private:
-    int proc_time = 0;  
-    int dmax = 0;       
-    int wd = 0, vd = 0, wp = 0, vp = 0, wo = 0, vo = 0;
+    double proc_time = 0;  
+    double dmax = 0;       
+    double wd = 0, vd = 0, wp = 0, vp = 0, wo = 0, vo = 0;
 
     vector<City> cities;
     vector<Helicopter> helis;
@@ -72,11 +72,11 @@ private:
 public:
     Planner() = default;
 
-    Planner(int proc_time_,
-            int dmax_,
-            int wd_, int vd_,
-            int wp_, int vp_,
-            int wo_, int vo_)
+    Planner(double proc_time_,
+            double dmax_,
+            double wd_, double vd_,
+            double wp_, double vp_,
+            double wo_, double vo_)
     : proc_time(proc_time_), dmax(dmax_),
       wd(wd_), vd(vd_), wp(wp_), vp(vp_), wo(wo_), vo(vo_) {}
 
