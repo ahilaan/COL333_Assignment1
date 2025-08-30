@@ -14,6 +14,41 @@ using namespace std;
 
 #include "planner.h"
 
+#include <unordered_map>
+
+static State clone_state_rebind(const State& s) {
+    State o;
+    o.state_cost = s.state_cost;
+    o.state_table.resize(s.state_table.size());
+    o.delivery_pool = s.delivery_pool;
+
+    std::unordered_map<const Delivery*, Delivery*> mp;
+    mp.reserve(o.delivery_pool.size());
+    for (size_t i = 0; i < o.delivery_pool.size(); i++) {
+        mp[ &s.delivery_pool[i] ] = &o.delivery_pool[i];
+    }
+
+    for (size_t h = 0; h < s.state_table.size(); h++) {
+        for (const auto& trip : s.state_table[h]) {
+            Trip<Node> nt;
+            nt.path_cost = trip.path_cost;
+            nt.weight    = trip.weight;
+            nt.val       = trip.val;
+            nt.path.reserve(trip.path.size());
+
+            for (const auto& node : trip.path) {
+                if (auto pc = std::get_if<City*>(&node)) {
+                    nt.path.push_back(*pc); 
+                } else if (auto pd = std::get_if<Delivery*>(&node)) {
+                    nt.path.push_back(mp[*pd]); 
+                }
+            }
+            o.state_table[h].push_back(std::move(nt));
+        }
+    }
+    return o;
+}
+
 vector<tuple<int,double,double>> pkts; // pkts ordered in v/w order desc
 
 // ---------- small helpers ----------
@@ -27,28 +62,31 @@ static inline pair<double,double> xy(const Node& n){
 }
 
 // ---------- packet allocator (mutating real village & trip) ----------
-Delivery packet_allocator(Village* v, Helicopter* h, Trip<Node>* t){
+Delivery packet_allocator(Village* v, Helicopter* h, Trip<Node>* t) {
     Delivery d;
     d.vil = v;
     d.x = v->x;
     d.y = v->y;
 
-    for (auto [i,val,wt] : pkts){
-
+    for (auto [i, val, wt] : pkts) {
         double remaining_heli_cap = h->wcap - t->weight;
-        int remaining_vil_cap  = (i <= 1 ? v->food : v->other);
+        int remaining_vil_cap = (i <= 1 ? v->food : v->other);
 
-        if (wt > remaining_heli_cap || remaining_vil_cap == 0) continue;
+        if (wt > remaining_heli_cap || remaining_vil_cap == 0) 
+            continue;
 
         int num = min((int)floor(remaining_heli_cap / wt), remaining_vil_cap);
 
-        if (i <= 1) v->food  -= num;
-        else        v->other -= num;
+        if (i <= 1)
+            v->food -= num;
+        else
+            v->other -= num;
 
         t->weight += (num * wt);
         t->val    += (num * val);
         d.resources[i] = num;
     }
+
     return d;
 }
 
@@ -66,7 +104,7 @@ tuple<int,double> best_neighbour(State& s,
     int bestH = -1, bestT = -1, bestP = -1;
     int bestI = -1;
     bool place_in_existing = true;
-    Delivery bestD{}; // local copy; will emplace into pool before storing pointer
+    Delivery bestD{}; 
 
     for (int i = 0; i < m; i++){ // candidate village
         const Village& vil3 = villages[i];
@@ -77,9 +115,9 @@ tuple<int,double> best_neighbour(State& s,
                 auto& trip = s.state_table[j][k];
 
                 for (int l = 1; l < (int)trip.path.size(); l++){
-                    auto [x1,y1] = xy(trip.path[l]);     // node after insertion
-                    auto [x2,y2] = xy(trip.path[l-1]);   // node before insertion
-                    double x3 = vil3.x, y3 = vil3.y;        // candidate
+                    auto [x1,y1] = xy(trip.path[l]);    
+                    auto [x2,y2] = xy(trip.path[l-1]);   
+                    double x3 = vil3.x, y3 = vil3.y;      
 
                     double d12 = dist(x1,y1,x2,y2);
                     double d23 = dist(x2,y2,x3,y3);
@@ -89,7 +127,6 @@ tuple<int,double> best_neighbour(State& s,
                     if (trip.path_cost + delta > helis[j].dcap) continue;
                     if (helis[j].kms + delta > dmax) continue;
 
-                    // evaluate packets without touching real village: use a copy
                     Trip<Node> temp; temp.weight = trip.weight; temp.val = 0;
                     Village vcopy = villages[i];
                     Delivery deli = packet_allocator(&vcopy, &helis[j], &temp);
@@ -106,7 +143,7 @@ tuple<int,double> best_neighbour(State& s,
                 }
             }
 
-            // also try starting a fresh trip for heli j
+            // also try starting a fresh trip
             double round = 2 * dist(cities[helis[j].city].x, cities[helis[j].city].y,
                                  villages[i].x, villages[i].y);
             if (helis[j].kms + round > dmax || round > helis[j].dcap) continue;
@@ -142,17 +179,15 @@ tuple<int,double> best_neighbour(State& s,
         double d31 = dist(x3,y3,x1,y1);
         double delta = d31 + d23 - d12;
 
-        // OWN the delivery in this State; store pointer into path
         s.delivery_pool.push_back(std::move(bestD));
         Delivery* dptr = &s.delivery_pool.back();
 
         trip.path.insert(trip.path.begin() + bestP, Node(dptr));
         trip.path_cost += delta;
 
-        // apply real packet allocation (mutate real village & trip)
         Trip<Node> apply_tmp; apply_tmp.weight = trip.weight; apply_tmp.val = 0;
         Delivery applied = packet_allocator(&villages[bestI], &helis[bestH], &apply_tmp);
-        (void)applied; // applied resources already applied via allocator
+        (void)applied; 
 
         trip.weight = apply_tmp.weight;
         trip.val   += apply_tmp.val;
@@ -250,6 +285,7 @@ State random_restart(vector<Village>& villages,
         double delta = d31 + d23 - d12;
 
         if (!((t.path_cost + delta > helis[h].dcap) || (helis[h].kms + delta > dmax))){
+            double old_val=t.val;
             Delivery deli = packet_allocator(&villages[i], &helis[h], &t);
             if (deli.resources[0]==0 && deli.resources[1]==0 && deli.resources[2]==0) continue;
 
@@ -265,7 +301,8 @@ State random_restart(vector<Village>& villages,
 
             helis[h].kms += delta;
             t.path_cost  += delta;
-            s.state_cost += - helis[h].alpha * delta;
+            double gain=t.val-old_val;
+            s.state_cost += (gain - helis[h].alpha * delta);
 
         } else {
             double round = 2 * dist(cities[helis[h].city].x, cities[helis[h].city].y,
@@ -295,54 +332,38 @@ State random_restart(vector<Village>& villages,
 
 // ---------- MAIN LOOP ----------
 State Planner::compute_allocation(){
-    // order pkts by value/weight ratio
-    pkts.clear();
-    if (vd/wd > vp/wp && vd/wd > vo/wo){
-        pkts.emplace_back(0, vd, wd);
-        if (vp/wp > vo/wo){
-            pkts.emplace_back(1, vp, wp);
-            pkts.emplace_back(2, vo, wo);
-        } else {
-            pkts.emplace_back(2, vo, wo);
-            pkts.emplace_back(1, vp, wp);
-        }
-    } else if (vp/wp > vd/wd && vp/wp > vo/wo){
-        pkts.emplace_back(1, vp, wp);
-        if (vd/wd > vo/wo){
-            pkts.emplace_back(0, vd, wd);
-            pkts.emplace_back(2, vo, wo);
-        } else {
-            pkts.emplace_back(2, vo, wo);
-            pkts.emplace_back(0, vd, wd);
-        }
-    } else {
-        pkts.emplace_back(2, vo, wo);
-        if (vd/wd > vp/wp){
-            pkts.emplace_back(0, vd, wd);
-            pkts.emplace_back(1, vp, wp);
-        } else {
-            pkts.emplace_back(1, vp, wp);
-            pkts.emplace_back(0, vd, wd);
-        }
-    }
-
+    pkts.emplace_back(1,vp,wp);
+    pkts.emplace_back(0,vd,wd);
+    pkts.emplace_back(2,vo,wo);
     using namespace std::chrono;
     auto start = high_resolution_clock::now();
-
+    State opt;
+    double mx=0;
+    opt.state_cost=0;
     State s;
     s.state_cost = 0;
     s.state_table.resize(helis.size()); // initialize empty trip lists
 
     while (true) {
         auto [flag, val] = best_neighbour(s, villages, helis, cities, dmax);
+        if(val>mx){
+            mx=val;
+            opt = clone_state_rebind(s);
+        }
         if (flag == -1) {
-            // no improving neighbour → stop
-            break;
+            for(auto &v:villages){
+                v.food=9*(v.n);
+                v.other=v.n;
+            }
+            for(auto &h:helis){
+                h.kms=0;
+            }
+            s = random_restart(villages, helis, cities, dmax);
         }
 
         auto now = high_resolution_clock::now();
         auto elapsed = duration_cast<milliseconds>(now - start).count();
         if (elapsed >= (long long)proc_time * 60000LL) break;
     }
-    return s;
+    return opt;
 }
