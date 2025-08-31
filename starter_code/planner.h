@@ -29,6 +29,7 @@ struct Helicopter {
 };
 
 struct Village {
+    int id=0;
     double x = 0;
     double y = 0;
     int n = 0;
@@ -37,7 +38,7 @@ struct Village {
 };
 
 struct Delivery{
-    Village* vil = nullptr;          
+    int vil=0;        
     double x = 0;                       
     double y = 0;                      
     array<int,3> resources{0,0,0};

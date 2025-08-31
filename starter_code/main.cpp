@@ -52,6 +52,7 @@ int main(int argc, char** argv) {
         ipfile >> v.x >> v.y >> v.n;
         v.food  = 9 * v.n;
         v.other = v.n;
+        v.id=i;
         pl.add_vill(v);
     }
 
@@ -93,8 +94,7 @@ int main(int argc, char** argv) {
             // print village id + drops
             for (auto& node : trip.path) {
                 if (auto pd = get_if<Delivery*>(&node)) {
-                    const auto& vref = pl.get_villages();
-                    int vid = (*pd)->vil - &vref[0];
+                    int vid = (*pd)->vil;
                     cout << " " << (vid+1) << " "
                         << (*pd)->resources[0] << " "
                         << (*pd)->resources[1] << " "
