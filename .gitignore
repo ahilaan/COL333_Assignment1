@@ -1,0 +1,29 @@
+# virtual envs
+venv/
+.venv/
+myenv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# build artifacts / binaries
+*.o
+*.exe
+*.out
+format_checker
+format_checker.o
+main
+starter_code/main
+starter_code/*.o
+
+# logs and images
+*.log
+results.log
+*.png
+
+# generated io
+inputs/
+outputs/
+input*.txt
+output*.txt

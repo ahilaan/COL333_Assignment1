@@ -6,13 +6,15 @@ CXXFLAGS := -std=c++17 -Wall -O2
 SRCDIR   := starter_code
 
 # ----- Solver (main) -----
-TARGET    := $(SRCDIR)/main
+# Build the solver binary at repo root as ./main (per instructions)
+TARGET    := main
 SOURCES   := $(SRCDIR)/main.cpp $(SRCDIR)/planner.cpp
 HEADERS   := $(SRCDIR)/planner.h
 OBJECTS   := $(SOURCES:.cpp=.o)
 
 # ----- Format checker (at repo root) -----
-CHECKER_SRC := format_checker.cpp
+# Needs io_handler to resolve readInputData
+CHECKER_SRC := format_checker.cpp io_handler.cpp
 CHECKER_OBJ := $(CHECKER_SRC:.cpp=.o)
 CHECKER_BIN := format_checker
 
@@ -29,27 +31,34 @@ $(TARGET): $(OBJECTS)
 $(SRCDIR)/%.o: $(SRCDIR)/%.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# Build checker
+# Build checker (links with io_handler.o)
 $(CHECKER_BIN): $(CHECKER_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
-# Compile checker object
-$(CHECKER_OBJ): $(CHECKER_SRC)
+# Compile checker objects
+%.o: %.cpp io_handler.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Run solver:
-#   make run in=starter_code/input1.txt out=starter_code/output1.txt
+#   make
+#   ./main <input_filename> <output_filename>
 run: $(TARGET)
 	@if [ -z "$(in)" ] || [ -z "$(out)" ]; then \
-	  echo "Usage: make run in=starter_code/input1.txt out=starter_code/output1.txt"; exit 1; \
+	  echo "Usage: ./main <input_filename> <output_filename>"; \
+	  echo "Or:    make run in=starter_code/input1.txt out=starter_code/output1.txt"; exit 1; \
 	fi
-	@$(TARGET) $(in) $(out)
+	@./$(TARGET) $(in) $(out)
 
-# Run checker on produced output:
+# Build-only target for the checker (per instructions)
+checker: $(CHECKER_BIN)
+	@echo "Built $(CHECKER_BIN). Run it as: ./format_checker <input_filename> <output_filename>"
+
+# Build & run checker in one go (kept for convenience)
 #   make check in=starter_code/input1.txt out=starter_code/output1.txt
-check: $(TARGET) $(CHECKER_BIN)
+check: $(CHECKER_BIN)
 	@if [ -z "$(in)" ] || [ -z "$(out)" ]; then \
-	  echo "Usage: make check in=starter_code/input1.txt out=starter_code/output1.txt"; exit 1; \
+	  echo "Usage: ./format_checker <input_filename> <output_filename>"; \
+	  echo "Or:    make check in=starter_code/input1.txt out=starter_code/output1.txt"; exit 1; \
 	fi
 	@./$(CHECKER_BIN) $(in) $(out)
 

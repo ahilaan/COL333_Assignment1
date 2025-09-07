@@ -15,7 +15,8 @@ using namespace std;
 
 #include "planner.h"
 
-// ======================== cloning helper ========================
+static mt19937 rng(std::random_device{}());
+
 static State clone_state_rebind(const State& s) {
     State o;
     o.state_cost = s.state_cost;
@@ -66,113 +67,134 @@ static inline pair<double,double> xy(const Node& n) {
 Delivery packet_allocator(Village* v, Helicopter* h, Trip<Node>* t) {
     Delivery d;
     d.vil = v->id;
-    d.x = v->x;
-    d.y = v->y;
+    d.x   = v->x;
+    d.y   = v->y;
 
     for (auto [i, val, wt] : pkts) {
         double remaining_heli_cap = h->wcap - t->weight;
-        int remaining_vil_cap = (i <= 1 ? v->food : v->other);
-
-        if (wt > remaining_heli_cap || remaining_vil_cap == 0)
-            continue;
+        int remaining_vil_cap     = (i <= 1 ? v->food : v->other);
+        if (wt > remaining_heli_cap || remaining_vil_cap == 0) continue;
 
         int num = min((int)floor(remaining_heli_cap / wt), remaining_vil_cap);
-
-        if (i <= 1) v->food -= num;
-        else        v->other -= num;
+        if (i <= 1) v->food -= num; else v->other -= num;
 
         t->weight += (num * wt);
         t->val    += (num * val);
         d.resources[i] = num;
     }
-
     return d;
 }
 
-// ---------- LOCAL SEARCH STEP (modifies s IN-PLACE) ----------
-tuple<int,double> best_neighbour(State& s,
-                                 vector<Village>& villages,
-                                 vector<Helicopter>& helis,
-                                 vector<City>& cities,
-                                 double dmax)
-{
+tuple<int,double> best_neighbour(
+    State& s,
+    vector<Village>& villages,
+    vector<Helicopter>& helis,
+    vector<City>& cities,
+    double dmax
+) {
+    const double EPS = 1e-12;
+
     int n = (int)s.state_table.size();
     int m = (int)villages.size();
 
-    double mx = 0;
+    double mx = 0.0;
     int bestH = -1, bestT = -1, bestP = -1;
     int bestI = -1;
     bool place_in_existing = true;
-    Delivery bestD{};
+    Delivery bestD{}; // will hold the precomputed packet choice
+
+    auto seg_delta = [&](const Node& A, const Node& B, double x3, double y3) -> double {
+        auto [x1,y1] = xy(A);
+        auto [x2,y2] = xy(B);
+        double d12 = dist(x1,y1,x2,y2);
+        double d23 = dist(x2,y2,x3,y3);
+        double d31 = dist(x3,y3,x1,y1);
+        return d31 + d23 - d12;
+    };
 
     for (int i = 0; i < m; i++) { // candidate village
         const Village& vil3 = villages[i];
+        double x3 = vil3.x, y3 = vil3.y;
 
         for (int j = 0; j < n; j++) { // choose helicopter
-            // try inserting into each existing trip
+            // --- Try inserting into each existing trip ---
             for (int k = 0; k < (int)s.state_table[j].size(); k++) {
                 auto& trip = s.state_table[j][k];
 
+                // PRECOMPUTE the packet allocation ONCE for (i,j,k)
+                Trip<Node> temp;
+                temp.weight = trip.weight;
+                temp.val    = 0;
+                Village vcopy = villages[i];
+                Delivery deli_once = packet_allocator(&vcopy, &helis[j], &temp);
+                if (deli_once.resources[0]==0 &&
+                    deli_once.resources[1]==0 &&
+                    deli_once.resources[2]==0) continue; // nothing to pick up
+
+                // Find the FEASIBLE edge with MIN delta (gain = temp.val - alpha*delta)
+                double best_delta_here = std::numeric_limits<double>::infinity();
+                int best_pos_here = -1;
+
                 for (int l = 1; l < (int)trip.path.size(); l++) {
-                    auto [x1,y1] = xy(trip.path[l]);
-                    auto [x2,y2] = xy(trip.path[l-1]);
-                    double x3 = vil3.x, y3 = vil3.y;
+                    double delta = seg_delta(trip.path[l], trip.path[l-1], x3, y3);
 
-                    double d12 = dist(x1,y1,x2,y2);
-                    double d23 = dist(x2,y2,x3,y3);
-                    double d31 = dist(x3,y3,x1,y1);
-                    double delta = d31 + d23 - d12;
-
+                    // Capacity / distance feasibility
                     if (trip.path_cost + delta > helis[j].dcap) continue;
-                    if (helis[j].kms + delta > dmax)            continue;
+                    if (helis[j].kms + delta > dmax) continue;
 
-                    Trip<Node> temp; temp.weight = trip.weight; temp.val = 0;
-                    Village vcopy = villages[i];
-                    Delivery deli = packet_allocator(&vcopy, &helis[j], &temp);
-                    if (deli.resources[0]==0 && deli.resources[1]==0 && deli.resources[2]==0) continue;
+                    if (delta < best_delta_here) {
+                        best_delta_here = delta;
+                        best_pos_here   = l;
+                    }
+                }
 
-                    double gain = temp.val - helis[j].alpha*delta;
-                    if (gain > mx) {
+                if (best_pos_here != -1) {
+                    double gain = temp.val - helis[j].alpha * best_delta_here;
+                    if (gain > mx + EPS) {
                         mx = gain;
-                        bestH = j; bestT = k; bestP = l; bestI = i;
-                        deli.vil = i;
-                        bestD = std::move(deli);
+                        bestH = j; bestT = k; bestP = best_pos_here; bestI = i;
+                        deli_once.vil = i;
+                        bestD = std::move(deli_once);
                         place_in_existing = true;
                     }
                 }
             }
 
-            // also try starting a fresh trip
-            double round = 2 * dist(cities[helis[j].city].x, cities[helis[j].city].y,
-                                    villages[i].x, villages[i].y);
-            if (helis[j].kms + round > dmax || round > helis[j].dcap) continue;
+            // --- Also try starting a fresh trip ---
+            double round = 2 * dist(
+                cities[helis[j].city].x, cities[helis[j].city].y,
+                x3, y3
+            );
+            if (!(helis[j].kms + round > dmax || round > helis[j].dcap)) {
+                Trip<Node> t;
+                t.weight = 0;
+                t.val    = 0;
+                Village vcopy = villages[i];
+                Delivery deli = packet_allocator(&vcopy, &helis[j], &t);
 
-            Trip<Node> t; t.weight = 0; t.val = 0;
-            Village vcopy = villages[i];
-            Delivery deli = packet_allocator(&vcopy, &helis[j], &t);
-            if (deli.resources[0]==0 && deli.resources[1]==0 && deli.resources[2]==0) continue;
-
-            double gain = t.val - (helis[j].F + helis[j].alpha*round);
-            if (gain > mx) {
-                mx = gain;
-                bestH = j; bestI = i;
-                deli.vil = i;
-                bestD = std::move(deli);
-                place_in_existing = false;
+                if (!(deli.resources[0]==0 && deli.resources[1]==0 && deli.resources[2]==0)) {
+                    double gain = t.val - (helis[j].F + helis[j].alpha*round);
+                    if (gain > mx + EPS) {
+                        mx = gain;
+                        bestH = j; bestI = i;
+                        deli.vil = i;
+                        bestD = std::move(deli);
+                        place_in_existing = false;
+                    }
+                }
             }
         }
     }
 
-    if (mx == 0) return { -1, s.state_cost };
+    if (mx <= EPS) return { -1, s.state_cost };
 
     if (place_in_existing) {
         auto& trip = s.state_table[bestH][bestT];
 
-        // recompute delta for chosen position
+        // recompute delta for chosen position (cheap, one time)
         auto [x1,y1] = xy(trip.path[bestP]);
         auto [x2,y2] = xy(trip.path[bestP-1]);
         double x3 = bestD.x, y3 = bestD.y;
-
         double d12 = dist(x1,y1,x2,y2);
         double d23 = dist(x2,y2,x3,y3);
         double d31 = dist(x3,y3,x1,y1);
@@ -180,55 +202,52 @@ tuple<int,double> best_neighbour(State& s,
 
         s.delivery_pool.push_back(std::move(bestD));
         Delivery* dptr = &s.delivery_pool.back();
-
         trip.path.insert(trip.path.begin() + bestP, Node(dptr));
         trip.path_cost += delta;
 
-        Trip<Node> apply_tmp; apply_tmp.weight = trip.weight; apply_tmp.val = 0;
-        Delivery applied = packet_allocator(&villages[bestI], &helis[bestH], &apply_tmp);
-        (void)applied;
-
+        Trip<Node> apply_tmp;
+        apply_tmp.weight = trip.weight;
+        apply_tmp.val    = 0;
+        (void)packet_allocator(&villages[bestI], &helis[bestH], &apply_tmp);
         trip.weight = apply_tmp.weight;
         trip.val   += apply_tmp.val;
-        helis[bestH].kms += delta;
 
-        s.state_cost += (apply_tmp.val - helis[bestH].alpha * delta);
+        helis[bestH].kms += delta;
+        s.state_cost     += (apply_tmp.val - helis[bestH].alpha * delta);
     } else {
         // start a new trip
         Trip<Node> t;
         t.path.push_back(&cities[helis[bestH].city]);
-
         s.delivery_pool.push_back(std::move(bestD));
         Delivery* dptr = &s.delivery_pool.back();
-
         t.path.push_back(Node(dptr));
         t.path.push_back(&cities[helis[bestH].city]);
+        t.path_cost = 2 * dist(
+            cities[helis[bestH].city].x, cities[helis[bestH].city].y,
+            dptr->x, dptr->y
+        );
 
-        t.path_cost = 2 * dist(cities[helis[bestH].city].x, cities[helis[bestH].city].y,
-                               dptr->x, dptr->y);
-
-        Trip<Node> apply_tmp; apply_tmp.weight = 0; apply_tmp.val = 0;
-        Delivery applied = packet_allocator(&villages[dptr->vil], &helis[bestH], &apply_tmp);
-        (void)applied;
-
+        Trip<Node> apply_tmp;
+        apply_tmp.weight = 0;
+        apply_tmp.val    = 0;
+        (void)packet_allocator(&villages[dptr->vil], &helis[bestH], &apply_tmp);
         t.weight = apply_tmp.weight;
         t.val    = apply_tmp.val;
 
         helis[bestH].kms += t.path_cost;
-        s.state_cost += (t.val - (helis[bestH].F + helis[bestH].alpha * t.path_cost));
-
+        s.state_cost     += (t.val - (helis[bestH].F + helis[bestH].alpha * t.path_cost));
         s.state_table[bestH].push_back(std::move(t));
     }
 
     return { 0, s.state_cost };
 }
 
-// ---------- RANDOM RESTART ----------
-State random_restart(vector<Village>& villages,
-                     vector<Helicopter>& helis,
-                     vector<City>& cities,
-                     double dmax)
-{
+State random_restart(
+    vector<Village>& villages,
+    vector<Helicopter>& helis,
+    vector<City>& cities,
+    double dmax
+) {
     State s;
     s.state_cost = 0;
     s.state_table.clear();
@@ -238,7 +257,6 @@ State random_restart(vector<Village>& villages,
     vector<int> perm(n);
     iota(perm.begin(), perm.end(), 0);
 
-    static mt19937 rng(std::random_device{}());
     shuffle(perm.begin(), perm.end(), rng);
 
     for (int i : perm) {
@@ -246,11 +264,15 @@ State random_restart(vector<Village>& villages,
         int h = pick_heli(rng);
 
         if (s.state_table[h].empty()) {
-            double round = 2 * dist(cities[helis[h].city].x, cities[helis[h].city].y,
-                                    villages[i].x, villages[i].y);
+            double round = 2 * dist(
+                cities[helis[h].city].x, cities[helis[h].city].y,
+                villages[i].x, villages[i].y
+            );
             if (helis[h].kms + round > dmax || round > helis[h].dcap) continue;
 
-            Trip<Node> t; t.weight = 0; t.val = 0;
+            Trip<Node> t;
+            t.weight = 0;
+            t.val    = 0;
             Delivery deli = packet_allocator(&villages[i], &helis[h], &t);
             if (deli.resources[0]==0 && deli.resources[1]==0 && deli.resources[2]==0) continue;
 
@@ -262,7 +284,6 @@ State random_restart(vector<Village>& villages,
             t.path.push_back(Node(dptr));
             t.path.push_back(&cities[helis[h].city]);
             t.path_cost = round;
-
             helis[h].kms += round;
 
             s.state_table[h].push_back(std::move(t));
@@ -292,24 +313,25 @@ State random_restart(vector<Village>& villages,
             // move last city, insert delivery*, put city back
             Node last = t.path.back();
             t.path.pop_back();
-
             s.delivery_pool.push_back(std::move(deli));
             Delivery* dptr = &s.delivery_pool.back();
-
             t.path.push_back(Node(dptr));
             t.path.push_back(last);
 
-            helis[h].kms += delta;
-            t.path_cost  += delta;
-            double gain = t.val - old_val;
-            s.state_cost += (gain - helis[h].alpha * delta);
-
+            helis[h].kms   += delta;
+            t.path_cost    += delta;
+            double gain     = t.val - old_val;
+            s.state_cost   += (gain - helis[h].alpha * delta);
         } else {
-            double round = 2 * dist(cities[helis[h].city].x, cities[helis[h].city].y,
-                                    villages[i].x, villages[i].y);
+            double round = 2 * dist(
+                cities[helis[h].city].x, cities[helis[h].city].y,
+                villages[i].x, villages[i].y
+            );
             if (helis[h].kms + round > dmax || round > helis[h].dcap) continue;
 
-            Trip<Node> t1; t1.weight = 0; t1.val = 0;
+            Trip<Node> t1;
+            t1.weight = 0;
+            t1.val    = 0;
             Delivery deli = packet_allocator(&villages[i], &helis[h], &t1);
             if (deli.resources[0]==0 && deli.resources[1]==0 && deli.resources[2]==0) continue;
 
@@ -320,50 +342,144 @@ State random_restart(vector<Village>& villages,
             t1.path.push_back(Node(dptr));
             t1.path.push_back(&cities[helis[h].city]);
             t1.path_cost = round;
-
             helis[h].kms += round;
+
             s.state_table[h].push_back(std::move(t1));
             const auto& last = s.state_table[h].back();
             s.state_cost += (last.val - (helis[h].F + helis[h].alpha * last.path_cost));
         }
     }
-
     return s;
 }
 
-// ---------- MAIN LOOP ----------
 State Planner::compute_allocation() {
-    pkts.emplace_back(1, vp, wp);
-    pkts.emplace_back(0, vd, wd);
-    pkts.emplace_back(2, vo, wo);
-
     using namespace std::chrono;
-    auto start = high_resolution_clock::now();
+
+    const long long total_ms = (long long) llround(proc_time * 60000.0) - 2000LL;
+    const int P = 1;
 
     State opt;
-    double mx = 0;
     opt.state_cost = 0;
+    double mx = 0.0;
 
-    State s;
-    s.state_cost = 0;
-    s.state_table.resize(helis.size()); // initialize empty trip lists
+    const auto baseVillages = villages;
+    const auto baseHelis    = helis;
 
-    // time-bounded greedy climbs with random restarts
-    while (true) {
-        auto [flag, val] = best_neighbour(s, villages, helis, cities, dmax);
-        if (val > mx) {
-            mx = val;
-            opt = clone_state_rebind(s);
+    static const int PERMS[6][3] = {
+        {1,0,2}, {0,1,2}, {1,2,0},
+        {0,2,1}, {2,1,0}, {2,0,1}
+    };
+
+    vector<double> wts = {0.5,0,0,0,0,0};
+
+    vector<vector<tuple<int,double,double>>> all_perms = {
+        { {1, vp, wp}, {0, vd, wd}, {2, vo, wo} },
+        { {1, vp, wp}, {2, vo, wo}, {0, vd, wd} },
+        { {0, vd, wd}, {1, vp, wp}, {2, vo, wo} },
+        { {0, vd, wd}, {2, vo, wo}, {1, vp, wp} },
+        { {2, vo, wo}, {1, vp, wp}, {0, vd, wd} },
+        { {2, vo, wo}, {0, vd, wd}, {1, vp, wp} }
+    };
+
+    auto push_pkt = [&](int idx) {
+        if (idx == 0)      pkts.emplace_back(0, vd, wd); // dry
+        else if (idx == 1) pkts.emplace_back(1, vp, wp); // wet
+        else               pkts.emplace_back(2, vo, wo); // other
+    };
+
+    // -------------------- Stage 1: 30% fixed-permutation --------------------
+    const long long warm_ms = (long long) llround(total_ms * 0.5);
+    for (int pi = 0; pi < P; ++pi) {
+        const long long budget = (long long) llround(total_ms * wts[pi]);
+        if (budget <= 0) break;
+
+        const auto perm_start = high_resolution_clock::now();
+        auto lvillages = baseVillages;
+        auto lhelis    = baseHelis;
+
+        State s;
+        s.state_cost = 0;
+        s.state_table.assign(helis.size(), {});
+
+        // FIXED permutation for this slice
+        pkts.clear();
+        push_pkt(PERMS[pi][0]);
+        push_pkt(PERMS[pi][1]);
+        push_pkt(PERMS[pi][2]);
+
+        while (true) {
+            auto [flag, val] = best_neighbour(s, lvillages, lhelis, cities, dmax);
+            if (val > mx) {
+                mx = val;
+                opt = clone_state_rebind(s);
+            }
+
+            // NOTE: no random reshuffle of pkts here (fixed-permutation stage)
+            if (flag == -1) {
+                for (auto &v : lvillages) {
+                    v.food  = 9*(v.n);
+                    v.other = v.n;
+                }
+                for (auto &h : lhelis) {
+                    h.kms = 0;
+                }
+                s = random_restart(lvillages, lhelis, cities, dmax);
+            }
+
+            auto now     = high_resolution_clock::now();
+            auto elapsed = duration_cast<milliseconds>(now - perm_start).count();
+            if (elapsed >= budget) break;
         }
-        if (flag == -1) {
-            for (auto &v : villages) { v.food = 9*(v.n); v.other = v.n; }
-            for (auto &h : helis)    { h.kms = 0; }
-            s = random_restart(villages, helis, cities, dmax);
-        }
+    }
 
-        auto now = high_resolution_clock::now();
-        auto elapsed = duration_cast<milliseconds>(now - start).count();
-        if (elapsed >= (long long)proc_time * 60000LL) break;
+    // -------------------- Stage 2: 70% (your existing random approach) --------------------
+    const long long remain_ms = total_ms - warm_ms;
+    if (remain_ms <= 0) return opt;
+
+    {
+        const auto perm_start = high_resolution_clock::now();
+        auto lvillages = baseVillages;
+        auto lhelis    = baseHelis;
+
+        State s;
+        s.state_cost = 0;
+        s.state_table.assign(helis.size(), {});
+
+        // seed pkts with any perm (doesn't matter, you reshuffle below)
+        pkts.clear();
+        push_pkt(PERMS[0][0]);
+        push_pkt(PERMS[0][1]);
+        push_pkt(PERMS[0][2]);
+
+        while (true) {
+            auto [flag, val] = best_neighbour(s, lvillages, lhelis, cities, dmax);
+            if (val > mx) {
+                mx = val;
+                opt = clone_state_rebind(s);
+            }
+
+            // --- random reshuffle after each neighbour call ---
+            std::random_device rd;
+            std::mt19937 gen(rd());
+            std::uniform_int_distribution<> dis(0, 5);
+            int random_number = dis(gen);
+            pkts = all_perms[random_number];
+
+            if (flag == -1) {
+                for (auto &v : lvillages) {
+                    v.food  = 9*(v.n);
+                    v.other = v.n;
+                }
+                for (auto &h : lhelis) {
+                    h.kms = 0;
+                }
+                s = random_restart(lvillages, lhelis, cities, dmax);
+            }
+
+            auto now     = high_resolution_clock::now();
+            auto elapsed = duration_cast<milliseconds>(now - perm_start).count();
+            if (elapsed >= remain_ms) break;
+        }
     }
 
     return opt;
